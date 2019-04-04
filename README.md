@@ -48,8 +48,8 @@ syntax is nicer! Still, there must be more to it; what can we do with a
 > `IO String`. We can think of `Variant` as the special case of `VariantF
 > Identity`._
 
-_Typically, a module involving a `Variant` may need some of the following
-extensions, depending on what you're doing with it:_
+Typically, a module involving a `Variant` may need some of the following
+extensions, depending on what you're doing with it:
 
 ```haskell
 {-# LANGUAGE
@@ -76,10 +76,10 @@ us lift any type into a variant that _could be_ that type! In other words:
 eg0 :: Int -> Variant '[Int]
 eg0 = throw
 
-eg1 :: String -> Variant '[Int, String]
+eg1 :: Bool -> Variant '[Bool, String]
 eg1 = throw
 
-eg2 :: Bool -> Variant '[Int, IO (), Bool]
+eg2 :: IO () -> Variant '[Int, IO (), Bool]
 eg2 = throw
 ```
 
@@ -158,3 +158,8 @@ Here, we've tried to call `getUser`, and handled the `UserNotFoundError`
 explicitly. You'll notice that, as a result, _this_ signature doesn't mention
 it! Thanks to some (_very careful_) use of `INCOHERENT`, a `CouldBe` and a
 `Catch` constraint will actually cancel each other out!
+
+This library gives us all the benefits of Haskell's type system, forcing us to
+be explicit about all the possible errors we encounter, but doesn't force us to
+stick to a concrete error stack throughout. Our code is less fragile, our
+functions are decoupled, and error-handling is actually bearable!
