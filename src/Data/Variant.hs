@@ -67,10 +67,6 @@ module Data.Variant
   , EithersF (..)
   , Eithers  (..)
 
-    -- * Lossy conversion to @Maybe@
-  , GuessF (..)
-  , Guess  (..)
-
     -- * Folds
   , FoldF (..)
   , Fold  (..)
@@ -78,8 +74,17 @@ module Data.Variant
     -- * Void conversions
   ,  preposterous
   , postposterous
+
+    -- * MTL/transformer utilities
+  , catchFM
+  , catchM
+
+  , throwFM
+  , throwM
   ) where
 
+import Control.Monad.Error.Class (MonadError (..))
+import Control.Monad.Trans.Except (ExceptT, mapExceptT, runExceptT)
 import Data.Bifunctor (first)
 import Data.Function ((&))
 import Data.Functor.Identity (Identity (..))
@@ -385,48 +390,6 @@ instance Eithers (y ': xs) zs => Eithers (x ': y ': xs) (Either x zs) where
   toEithers   = variant Left (Right . toEithers)
   fromEithers = either (Here . Identity) (There . fromEithers)
 
--- | Rather than folding our type, we could just "guess" what's in there. If
--- we're right, we'll get a 'Just'-wrapped value. If not, we'll get 'Nothing'.
---
--- This primitive is enough for us to build something like a prism:
---
--- >>> import Control.Lens
--- >>> :{
--- guessedF :: (GuessF x xs, xs `CouldBeF` x) => Prism' (VariantF f xs) (f x)
--- guessedF = prism' throwF guessF
--- :}
---
--- This can then be called with a type application:
---
--- >>> Here (Identity True) ^? guessedF @Bool
--- Just (Identity True)
-class GuessF (x :: k) (xs :: [k]) where
-  guessF :: VariantF f xs -> Maybe (f x)
-
-instance GuessF x (x ': xs) where
-  guessF = variantF Just \_ -> Nothing
-
-instance {-# OVERLAPPABLE #-} GuessF x xs
-    => GuessF x (y ': xs) where
-  guessF = guessF & variantF \_ -> Nothing
-
--- | 'GuessF' without the functor! Similarly, we can use this to construct a
--- type-applied prism over our 'Variant':
---
--- >>> import Control.Lens
--- >>> :{
--- guessed :: (Guess x xs, xs `CouldBe` x) => Prism' (Variant xs) x
--- guessed = prism' throw guess
--- :}
---
--- >>> (throw True :: Variant '[Bool, String]) ^? guessed @String
--- Nothing
-class Guess (x :: Type) (xs :: [Type]) where
-  guess :: Variant xs -> Maybe x
-
-instance GuessF x xs => Guess x xs where
-  guess = fmap runIdentity . guessF
-
 -- | A constraint-based fold requires a polymorphic function relying on a
 -- shared constraint between all members of the variant. If that's a lot of
 -- words, let's see a little example:
@@ -472,3 +435,100 @@ preposterous = \case
 -- | ... and it also means we can convert back!
 postposterous :: Void -> VariantF f '[]
 postposterous = \case
+
+-- | When working in some monadic context, using 'catch' becomes trickier. The
+-- intuitive behaviour is that each 'catch' shrinks the variant in the left
+-- side of my 'MonadError', but this is therefore type-changing: as we can only
+-- 'throwError' and 'catchError' with a 'MonadError' type, this is impossible!
+--
+-- To get round this problem, we have to specialise to 'ExceptT', which allows
+-- us to map over the error type and change it as we go. If the error we catch
+-- is the one in the variant that we want to handle, we pluck it out and deal
+-- with it. Otherwise, we "re-throw" the variant minus the one we've handled.
+catchFM
+  :: forall x e e' f m a
+   . ( Monad m
+     , CatchF x e e'
+     )
+  =>         ExceptT (VariantF f e ) m a
+  -> (f x -> ExceptT (VariantF f e') m a)
+  ->         ExceptT (VariantF f e') m a
+
+catchFM xs recover = mapExceptT (>>= go) xs
+  where
+    go = \case
+      Right success -> pure (Right success)
+      Left  failure -> case catchF @x failure of
+        Right hit  -> runExceptT (recover hit)
+        Left  miss -> pure (Left miss)
+
+-- | Just the same as 'catchFM', but specialised for our plain 'Variant' and
+-- sounding much less like a radio station.
+catchM
+  :: forall x e e' m a
+   . ( Monad m
+     , Catch x e e'
+     )
+  =>       ExceptT (Variant e ) m a
+  -> (x -> ExceptT (Variant e') m a)
+  ->       ExceptT (Variant e') m a
+
+catchM xs recover
+  = catchFM xs (recover . runIdentity)
+
+-- | Throw an error into a variant 'MonadError' context. Note that this /isn't/
+-- type-changing, so this can work for any 'MonadError', rather than just
+-- 'ExceptT'.
+throwFM :: (MonadError (VariantF f e) m, e `CouldBe` x) => f x -> m a
+throwFM = throwError . throwF
+
+-- | Same as 'throwFM', but without the @f@ context. Given a value of some type
+-- within a 'Variant' within a 'MonadError' context, "throw" the error.
+throwM :: (MonadError (Variant e) m, e `CouldBe` x) => x -> m a
+throwM = throwFM . Identity
+
+-- | Worked example:
+--
+-- >>> :set -XBlockArguments -XLambdaCase
+-- >>> import Control.Monad.IO.Class (liftIO)
+--
+-- Let's declare some error types for our example app:
+--
+-- >>> data NetworkError      = NetworkError
+-- >>> data UserNotFoundError = UserNotFoundError
+--
+-- Now these are in place, we can write a bit of business logic. This is
+-- extremely contrived, but hopefully illustrates the point: we have a function
+-- in which a number of things might go wrong!
+--
+-- >>> :{
+-- getUser
+--   :: ( e `CouldBe` NetworkError
+--      , e `CouldBe` UserNotFoundError
+--      )
+--   => String
+--   -> ExceptT (Variant e) IO String
+-- getUser = \case
+--   "Alice" -> throwM NetworkError
+--   "Tom"   -> pure "Hi, Tom!"
+--   _       -> throwM UserNotFoundError
+-- :}
+--
+-- When we come to render a user's profile, we can deal with a missing user. If
+-- something went wrong with the network, though, we'll handle that further up
+-- the call stack:
+--
+-- >>> :{
+-- renderProfile
+--   :: e `CouldBe` NetworkError -- No mention of @UserNotFoundError@!
+--   => String
+--   -> ExceptT (Variant e) IO ()
+-- renderProfile username = do
+--   name <- catchM @UserNotFoundError (getUser username) \_ -> do
+--     liftIO (putStrLn "ERROR! USER NOT FOUND. Defaulting to 'guest'.")
+--     pure "Hello, mysterious stranger!"
+--   liftIO (putStrLn name)
+-- :}
+--
+-- Notice that the @UserNotFoundError@ constraint has disappeared! By using
+-- 'catchM', we have /dispatched/ this constraint!

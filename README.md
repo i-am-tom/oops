@@ -1,58 +1,109 @@
 # Oops 🍌
 
-## Introduction
-
 When we're writing functional code involving errors, we often find ourselves
-reaching for a type like `Either`. When our code gets more complicated,
-however, we're going to find ourselves introducing multiple error types (see
-[Matt Parsons' blog](https://www.parsonsmatt.org/2018/11/03/trouble_with_typed_errors.html)
-for a nice introduction to this practice).
+reaching for a type like `Either` (usually `ExceptT`): we put our "success
+type" on the `Right`, and our "error type" on the `Left`. When our code gets
+more complicated, however, we're going to find ourselves introducing *multiple*
+error types (see [Matt Parsons'
+blog](https://www.parsonsmatt.org/2018/11/03/trouble_with_typed_errors.html)
+for a nice introduction to this practice). This is great, but the solution is
+also a new problem: our error types are not all the same! In order to use the
+monad instance, we need all our results to have the same `Left` type. How do we
+have both?
 
-The problem with multiple error types is that they become difficult to juggle.
-If we go for a nested `Either` type, we end up with one big problem:
-*Maintenance*. Not only does it look _horrible_, but it looks worse when we
-need to add or remove types. Add that to the fact that any structural change to
-that nesting will break a _lot_ of code, and it's just not ideal.
+One solution is the nested `Either` type. As our error catalogue grows, so does
+our type signature:
 
-### "`x` is _one of_ `xs`"
+| Possible errors | Type                                               |
+| --------------- | -------------------------------------------------- |
+| 1               | `ExceptT a IO ()`                                  |
+| 2               | `ExceptT (Either a b) IO ()`                       |
+| 3               | `ExceptT (Either a (Either b c)) IO ()`            |
+| 4               | `ExceptT (Either a (Either b (Either c d))) IO ()` |
+| ...             | ...                                                |
 
-The `Variant` type in this library captures the same information, but in a less
-fragile way. A `Variant '[Int, String, Bool]` is _either_ an `Int`, a `String`,
-or a `Bool`. Rather than worrying about the internal structure, let's just
-focus on the API!
+This is _fine_: we can use some type synonyms to hide all this noise (`type
+Errors = Either ...`), or maybe even alias `Either` (`type (+) = Either`) to
+something smaller. Both are acceptable, but it comes with a big maintenance
+burden. The structure of the `Either` type is quite fragile, and adding more
+errors to the catalogue will invariably break other code (what was once added
+with `Right . Right . Right` is now `Right . Right . Left`). Add to that the
+fact that it's just _noisy_. What if we had...
 
-### Throwing
+| Either                             | Variant                 |
+| ---------------------------------- | ----------------------- |
+| `a`                                | `Variant '[a]`          |
+| `Either a b`                       | `Variant '[a, b]`       |
+| `Either a (Either b c)`            | `Variant '[a, b, c]`    |
+| `Either a (Either b (Either c d))` | `Variant '[a, b, c, d]` |
+
+With the `Variant` type, we declare (in the type) the list of possible values,
+just as we do with `Either`. The only real difference at this point is that the
+syntax is nicer! Still, there must be more to it; what can we do with a
+`Variant`?
+
+> _The library also defines `VariantF`, which works in the same way, but the
+> type also mentions a type constructor, and the list of types are applied to
+> it. For example, `VariantF IO '[Int, String]` is actually either `IO Int` or
+> `IO String`. We can think of `Variant` as the special case of `VariantF
+> Identity`._
+
+_Typically, a module involving a `Variant` may need some of the following
+extensions, depending on what you're doing with it:_
+
+```haskell
+{-# LANGUAGE
+      DataKinds
+    , FlexibleContexts
+    , MonoLocalBinds
+    , RankNTypes
+    , ScopedTypeVariables
+    , TypeApplications
+    , TypeOperators #-}
+```
+
+## "Throwing"
 
 ```haskell
 throw :: xs `CouldBe` x => x -> Variant xs
 ```
 
-If we have a value of a type that is in our `Variant`, the `throw` function
-will "lift" that type in. In other words, if I want `Int -> Variant '[Int,
-String, Bool]`, or `String -> Variant '[Int, String, Bool]` or _even_ `Bool ->
-Variant '[Int, String, Bool]`, then `throw` is the function for me!
+Given some variant of types `xs` (e.g. `'[Int, String, Bool]`), if we have some
+type `x` in that variant, we say that the variant _could be_ `x`. `throw` lets
+us lift any type into a variant that _could be_ that type! In other words:
 
-As long as we can prove that our type exists inside our `Variant` (or, in other
-words, our type _could be_ the one inside it), then we can lift the value! Now,
-why do we call it throw?
+```haskell
+eg0 :: Int -> Variant '[Int]
+eg0 = throw
 
-### Catching
+eg1 :: String -> Variant '[Int, String]
+eg1 = throw
+
+eg2 :: Bool -> Variant '[Int, IO (), Bool]
+eg2 = throw
+```
+
+Now, _why do we call it throw_?
+
+## "Catching"
 
 ```haskell
 catch :: Catch x xs ys => Variant xs -> Either (Variant ys) x
 ```
 
 The `catch` function effectively "plucks" a type _out_ of the constraint. In
-other words, if I `catch @String` on a `Variant '[Int, String, Bool]` the
-result is `Either (Variant '[Int, Bool]) String`. The name is a reference to
-the `throw`/`catch` exception systems in other languages: in Java, I may see a
-definition like this:
+other words, if I `catch @String` on a `Variant '[Int, String, Bool]`, the
+result is `Either (Variant '[Int, Bool]) String`. This allows us to remove
+errors from the catalogue as we go up up the call stack.
+
+The name is a reference to the `throw`/`catch` exception systems in other
+languages. In Java, I may see a definition like this:
 
 ```java
 public static void whatever() throws ExceptionA, ExceptionB
 ```
 
-The equivalent using this library would be:
+The equivalent in Haskell using _this_ library would be:
 
 ```haskell
 main
@@ -62,77 +113,48 @@ main
   => String -> Either e ()
 ```
 
-## Throwing _and_ Catching
+## "Throwing" _and_ "Catching"
 
 The interesting thing about the above two functions is that you should almost
 _never_ see the `Catch` constraint in one of your signatures. Let's see an
 example:
 
 ```haskell
-fetchUser
-  :: forall e m
-   . ( e `CouldBe` DeletedUserError
-     , e `CouldBe` NetworkError
-     , MonadError e m
-     , MonadAccounts m
+data NetworkError      = NetworkError
+data UserNotFoundError = UserNotFoundError
+
+getUser
+  :: ( e `CouldBe` NetworkError
+     , e `CouldBe` UserNotFoundError
      )
-  => UserId
-  -> m User
+  => String
+  -> ExceptT (Variant e) IO String
 
-fetchUser userId = do
-  let throw' :: forall oops a. e `CouldBe` oops => oops -> m a
-      throw' = throwError . throw
-
-  ...
-
-  queryResult <- runQuery >>= \case
-    Just result -> parse result
-    Nothing     -> throw' NetworkConnectionDropped
-
-  ...
-
-  user <- case queryResult of
-    Just user -> pure user
-    Nothing   -> throw' (DeletedUserError userId)
-
-  ...
+getUser = \case
+  "Alice" -> throwM NetworkError
+  "Tom"   -> pure "Hi, Tom!"
+  _       -> throwM UserNotFoundError
 ```
 
-Our app might have some business logic that looks similar to this, and we
-declare in the type signature that it _might_ throw one of a couple possible
-errors. We can then "throw" something into a variant using `throw`, followed by
-`throwError` to lift the variant into `MonadError`. Let's say we call this from
-a function that renders a user profile:
+We've got ourselves a fresh (and extremely contrived) bit of business logic!
+Notice that, according to the constraints, a couple things could go wrong: we
+could have a network error, or fail to find the user!
+
+Now, let's say we're calling this from another function that does some more
+contrived business logic:
 
 ```haskell
-profile
-  :: forall e m
-   . ( e `CouldBe` NetworkError
-     , MonadAccounts m
-     , MonadError e m
-     )
-  => UserId
-  -> m Aeson.Value
+renderProfile :: e `CouldBe` NetworkError => ExceptT (Variant e) IO ()
+renderProfile = do
+  name <- catchM @UserNotFoundError getUser \_ -> do
+    liftIO (putStrLn "ERROR! USER NOT FOUND. Defaulting to 'Alice'.")
 
-profile userId = do
-  ...
+    pure "Alice"
 
-  user <- runExceptT (fetchUserId userId) >>= \case
-    Right user -> render user
-
-    Left errors ->
-      case catch @DeletedUserError errors of
-        Right error -> render404
-        Left errors -> throwError errors
-
-  ...
+  liftIO (putStrLn name)
 ```
 
-Here, we've called the function, then specialised it to an `ExceptT` in order
-to get hold of the error variant. At that point, we `catch` a
-`DeletedUserError`, and throw anything else.
-
-What's interesting here is that the `catch` call doesn't _add_ a constraint to
-the `profile` function - it removes one! 
-
-TODO
+Here, we've tried to call `getUser`, and handled the `UserNotFoundError`
+explicitly. You'll notice that, as a result, _this_ signature doesn't mention
+it! Thanks to some (_very careful_) use of `INCOHERENT`, a `CouldBe` and a
+`Catch` constraint will actually cancel each other out!
