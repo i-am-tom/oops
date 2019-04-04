@@ -156,8 +156,8 @@ renderProfile = do
 
 Here, we've tried to call `getUser`, and handled the `UserNotFoundError`
 explicitly. You'll notice that, as a result, _this_ signature doesn't mention
-it! Thanks to some (_very careful_) use of `INCOHERENT`, a `CouldBe` and a
-`Catch` constraint will actually cancel each other out!
+it! Thanks to some careful instance trickery, a `CouldBe` and a `Catch`
+constraint will actually cancel each other out!
 
 This library gives us all the benefits of Haskell's type system, forcing us to
 be explicit about all the possible errors we encounter, but doesn't force us to
