@@ -225,23 +225,30 @@ instance Case (y ': zs) r ((y -> r) -> o)
 case_ :: Case xs r fold => Variant xs -> fold
 case_ = case_' . Right
 
-type family TypeNotFound (x :: Type) (xs :: [Type]) :: k where
-  TypeNotFound x xs
+type family TypeNotFound (x :: k) :: l where
+  TypeNotFound x
     = TypeError ( 'Text "Uh oh! I couldn't find " ':<>: 'ShowType x
-        ':<>: 'Text " inside the " ':<>: 'ShowType xs ':<>: 'Text " variant!"
-        ':$$: 'Text "If you're pretty sure I'm wrong, perhaps the variant"
-        ':<>: 'Text " type is ambiguous; could you add some annotations?" )
+        ':<>: 'Text " inside the variant!"
+        ':$$: 'Text "If you're pretty sure I'm wrong, perhaps the variant "
+        ':<>: 'Text "type is ambiguous;"
+        ':$$: 'Text "could you add some annotations?" )
 
--- | When dealing with larger (or polymorphic) variants variants, it becomes
--- difficult (or impossible) to construct 'VariantF' values explicitly. In that
--- case, the 'throwF' function gives us a polymorphic way to lift values into
--- variants.
+-- | When dealing with larger (or polymorphic) variants, it becomes difficult
+-- (or impossible) to construct 'VariantF' values explicitly. In that case, the
+-- 'throwF' function gives us a polymorphic way to lift values into variants.
 --
 -- >>> throwF (pure "Hello") :: VariantF Maybe '[Bool, Int, Double, String]
 -- There (There (There (Here (Just "Hello"))))
 --
 -- >>> throwF (pure True) :: VariantF Maybe '[Bool, Int, Double, String]
 -- Here (Just True)
+--
+-- >>> throwF (pure True) :: VariantF IO '[Int, Double, String]
+-- ...
+-- ... • Uh oh! I couldn't find Bool inside the variant!
+-- ...   If you're pretty sure I'm wrong, perhaps the variant type is ambiguous;
+-- ...   could you add some annotations?
+-- ...
 class CouldBeF (xs :: [k]) (x :: k) where
   throwF :: f x -> VariantF f xs 
 
@@ -251,6 +258,9 @@ instance CouldBeF (x ': xs) x where
 instance {-# OVERLAPPABLE #-} CouldBeF xs x
     => CouldBeF (y ': xs) x where
   throwF = There . throwF
+
+instance TypeNotFound x => CouldBeF '[] x where
+  throwF = error "Impossible!"
 
 -- | Just as with 'CouldBeF', we can "throw" values /not/ in a functor context
 -- into a regular 'Variant'.
