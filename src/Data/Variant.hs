@@ -14,6 +14,7 @@
 {-# LANGUAGE StandaloneDeriving     #-}
 {-# LANGUAGE TypeApplications       #-}
 {-# LANGUAGE TypeFamilies           #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators          #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
@@ -58,6 +59,8 @@ module Data.Variant
     -- * Injections
   , CouldBeF (..)
   , CouldBe  (..)
+  , CouldBeAnyOfF
+  , CouldBeAnyOf
 
     -- * Projections
   , CatchF (..)
@@ -275,6 +278,36 @@ class CouldBeF xs x => CouldBe (xs :: [Type]) (x :: Type) where
 
 instance CouldBeF xs x => CouldBe xs x where
   throw = throwF . Identity
+
+type family FlattenConstraints (cs :: [Constraint]) = (c :: Constraint) | c -> cs where
+  FlattenConstraints  '[] = ()
+  FlattenConstraints (c ': cs) = (c, FlattenConstraints cs)
+
+type family TypeMap (f :: k -> l) (xs :: [k]) = (c :: [l]) where
+  TypeMap f (x ': xs) = f x ': (TypeMap f xs)
+  TypeMap f '[] = '[]
+
+type family SpreadConstraint (f :: k -> Constraint) (xs :: [k]) = (c :: Constraint) where
+  SpreadConstraint f xs = FlattenConstraints (TypeMap f xs)
+
+-- | As with 'CouldBeAnyOf', we can also constrain a variant to represent
+-- several possible types, as we might with several 'CouldBeF' constraints,
+-- using one type-level list.
+type family CouldBeAnyOfF (e :: [Type]) (xs :: [Type]) = (c :: Constraint) where
+  CouldBeAnyOfF e xs = SpreadConstraint (CouldBeF e) xs
+
+-- | Listing larger variants' constraints might amplify the noise of
+-- functions' signatures. The 'CouldBeAnyOfF' constraint lets us specify
+-- several types a variant may contain in a single type level list, as opposed
+-- to several independent constraints. So, we could replace,
+--
+-- f :: (e `CouldBe` Int, e `CouldBe` Bool, e `CouldBe` Char) => VariantF IO e
+--
+-- with the equivalent constraint,
+--
+-- f :: e `CouldBeAnyOf` '[Int, Bool, Char] => VariantF IO e
+type family CouldBeAnyOf (e :: [Type]) (xs :: [Type]) = (c :: Constraint) where
+  CouldBeAnyOf e xs = SpreadConstraint (CouldBe e) xs
 
 -- | This is an odd constraint, as you should rarely need to /see/ it. GHC's
 -- partial instantiation tricks should mean that mentions of this class "cancel
