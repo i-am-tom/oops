@@ -13,7 +13,6 @@
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE StandaloneDeriving     #-}
 {-# LANGUAGE TypeApplications       #-}
-{-# LANGUAGE TypeFamilies           #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators          #-}
 {-# LANGUAGE UndecidableInstances   #-}
@@ -253,7 +252,7 @@ type family TypeNotFound (x :: k) :: l where
 -- ...   could you add some annotations?
 -- ...
 class CouldBeF (xs :: [k]) (x :: k) where
-  throwF :: f x -> VariantF f xs 
+  throwF :: f x -> VariantF f xs
 
 instance CouldBeF (x ': xs) x where
   throwF = Here
@@ -279,26 +278,22 @@ class CouldBeF xs x => CouldBe (xs :: [Type]) (x :: Type) where
 instance CouldBeF xs x => CouldBe xs x where
   throw = throwF . Identity
 
-type family FlattenConstraints (cs :: [Constraint]) = (c :: Constraint) | c -> cs where
-  FlattenConstraints  '[] = ()
-  FlattenConstraints (c ': cs) = (c, FlattenConstraints cs)
+type family All (cs :: [Constraint]) = (c :: Constraint) | c -> cs where
+  All  '[] = ()
+  All (c ': cs) = (c, All cs)
 
-type family TypeMap (f :: k -> l) (xs :: [k]) = (c :: [l]) where
-  TypeMap f (x ': xs) = f x ': (TypeMap f xs)
-  TypeMap f '[] = '[]
-
-type family SpreadConstraint (f :: k -> Constraint) (xs :: [k]) = (c :: Constraint) where
-  SpreadConstraint f xs = FlattenConstraints (TypeMap f xs)
+type family Map (f :: k -> l) (xs :: [k]) = (ys :: [l]) where
+  Map f (x ': xs) = f x ': (Map f xs)
+  Map f '[] = '[]
 
 -- | As with 'CouldBeAnyOf', we can also constrain a variant to represent
 -- several possible types, as we might with several 'CouldBeF' constraints,
 -- using one type-level list.
-type family CouldBeAnyOfF (e :: [Type]) (xs :: [Type]) = (c :: Constraint) where
-  CouldBeAnyOfF e xs = SpreadConstraint (CouldBeF e) xs
+type e `CouldBeAnyOfF` xs = All (Map (CouldBeF e) xs)
 
 -- | Listing larger variants' constraints might amplify the noise of
 -- functions' signatures. The 'CouldBeAnyOfF' constraint lets us specify
--- several types a variant may contain in a single type level list, as opposed
+-- several types a variant may contain in a single type-level list, as opposed
 -- to several independent constraints. So, we could replace,
 --
 -- f :: (e `CouldBe` Int, e `CouldBe` Bool, e `CouldBe` Char) => VariantF IO e
@@ -306,8 +301,23 @@ type family CouldBeAnyOfF (e :: [Type]) (xs :: [Type]) = (c :: Constraint) where
 -- with the equivalent constraint,
 --
 -- f :: e `CouldBeAnyOf` '[Int, Bool, Char] => VariantF IO e
-type family CouldBeAnyOf (e :: [Type]) (xs :: [Type]) = (c :: Constraint) where
-  CouldBeAnyOf e xs = SpreadConstraint (CouldBe e) xs
+--
+-- As 'CouldBeAnyOf' is just short-hand, we can use 'throw' just like when we
+-- have 'CouldBe' constraints:
+--
+-- >>> :set -XTypeOperators
+-- >>> :{
+-- f :: e `CouldBeAnyOf` '[Int, Bool, Char] => Variant e
+-- f = throw 'c'
+-- :}
+--
+-- ... and eliminate constraints in just the same way:
+--
+-- >>> :{
+-- g :: e `CouldBeAnyOf` '[Int, Bool] => Either (Variant e) Char
+-- g = catch @Char f
+-- :}
+type e `CouldBeAnyOf` xs = All (Map (CouldBe e) xs)
 
 -- | This is an odd constraint, as you should rarely need to /see/ it. GHC's
 -- partial instantiation tricks should mean that mentions of this class "cancel
